@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from math import ceil
 
 from httpx import AsyncClient, Timeout, ReadTimeout
@@ -56,25 +57,35 @@ class AnionParser:
                 .find_all('a', class_='page-link')[-1].text
         )
 
+        print(f"[I] В категории {category_url} обнаружено {products_count} товаров")
         product_urls = []
+        page_count = ceil(products_count / 100)
         # print(f'Общее количество эл-ов: {products_count}\nКоличество страниц в группе: ', ceil(products_count / 100))
-        for page_num in range(ceil(products_count / 100)):
-            print('Парсим на странице', page_num + 1)
+        for page_num in range(page_count):
             page_param = {'page': page_num + 1} if page_num + 1 > 1 else {}
-            resp = await self.__client.get(self.__base_url + category_url,
-                                           params={
-                                               'limit': 100,
-                                               **page_param
-                                           })
+            try:
+                resp = await self.__client.get(self.__base_url + category_url,
+                                               params={
+                                                   'limit': 100,
+                                                   **page_param
+                                               })
+            except ReadTimeout:
+                print(f'[E] Превышено время ожидания при парсинге страницы {page_num}')
+                continue
 
             soup = BeautifulSoup(resp.content, 'html.parser')
 
             product_names = soup.find_all('p', class_='name')
-            print('Всего элементов', len(product_names))
+            if page_num + 1 < page_count and len(product_names) < 100:
+                print(f'[E] Произошла ошибка при парсинге страницы {page_num}, найдено {len(product_names)} товаров')
 
+            pr_bar = round(page_num * 100 / page_count / 10)
+            print(f"[{'#' * pr_bar * 2}{' ' * (10 - pr_bar) * 2}] {page_num}/{page_count}", end='\r')
             for i, product_name in enumerate(product_names):
                 product_urls.append(product_name.find_next('a').get('href'))
             #     print(f'Распаршенно {i+1}/100 элементов на странице {page_num}\nОбщее количество эл-ов: {len(product_urls)}')
+        print()
+
         return product_urls
 
 
@@ -220,15 +231,21 @@ async def main():
 
     # print(categories_urls)
 
-    products_url = await anion_parser.get_category_product_urls(categories_urls[-5])
+    products_url = await anion_parser.get_category_product_urls(categories_urls[-4])
 
     # print(products_url[:100])
     anion_table = AnionTable()
-    print('Парсинг начался')
-    for i, chunk_products in enumerate(chunked(products_url[:200], 3)):
+    print('[D] Парсинг товаров начался')
+    chunks = chunked(products_url, 2)
+    for i, chunk_products in enumerate(chunks):
+        time_start = datetime.now()
         tasks = [get_and_write(anion_parser, anion_table, pr_url) for pr_url in chunk_products]
         await asyncio.gather(*tasks)
-        print(f'Распашен {i + 1} чанк')
+
+        ch_per_s = 2 / (datetime.now().second - time_start.second)
+        time_left = len(chunks) - (i+1) * (datetime.now().second - time_start.second)
+        pr_bar = round((i+1) * 100 / len(chunks) / 10)
+        print(f"[{'#' * pr_bar * 2}{' ' * (10 - pr_bar) * 2}] {round(ch_per_s, 2)} ch/s {i+1}/{len(chunks)} ch. time left {round(time_left / 60, 2)} m.", end='\r')
     # for i, product_url in enumerate(products_url[100:500]):
     #     print(f'Распарсил {i}/500')
     #     product = await anion_parser.get_product(product_url)
