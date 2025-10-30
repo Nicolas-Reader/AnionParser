@@ -148,7 +148,8 @@ class AnionParser:
                     continue
 
                 price_lower_limit = price.split(':')[0]
-                price_high_limit = int(prices[i+1].split(':')[0]) - 1
+                price_high_limit = (int(prices[i+1].split(':')[0]) - 1) \
+                    if prices[i+1].split(':')[0].isdigit() else ''
 
                 price = price.split(':')[-1]
 
@@ -226,32 +227,26 @@ async def get_and_write(aparser, atable, pr_url):
 
 async def main():
     anion_parser = AnionParser()
-
     categories_urls = await anion_parser.get_all_categories_url()
 
-    # print(categories_urls)
+    for category_url in categories_urls:
+        products_url = await anion_parser.get_category_product_urls(category_url)
 
-    products_url = await anion_parser.get_category_product_urls(categories_urls[-4])
+        anion_table = AnionTable(f"book_{category_url.split('/')[-1]}")
+        print('[D] Парсинг товаров начался')
+        chunks = chunked(products_url, 2)
+        for i, chunk_products in enumerate(chunks):
+            time_start = datetime.now()
+            tasks = [get_and_write(anion_parser, anion_table, pr_url) for pr_url in chunk_products]
+            await asyncio.gather(*tasks)
 
-    # print(products_url[:100])
-    anion_table = AnionTable()
-    print('[D] Парсинг товаров начался')
-    chunks = chunked(products_url, 2)
-    for i, chunk_products in enumerate(chunks):
-        time_start = datetime.now()
-        tasks = [get_and_write(anion_parser, anion_table, pr_url) for pr_url in chunk_products]
-        await asyncio.gather(*tasks)
+            ch_per_s = 2 / (datetime.now().second - time_start.second)
+            time_left = len(chunks) - (i+1) * (datetime.now().second - time_start.second)
+            pr_bar = round((i+1) * 100 / len(chunks) / 10)
+            print(f"[{'#' * pr_bar * 2}{' ' * (10 - pr_bar) * 2}] {round(ch_per_s, 2)} ch/s {i+1}/{len(chunks)} ch. time left {round(time_left / 60, 2)} m.", end='\r')
+        print()
 
-        ch_per_s = 2 / (datetime.now().second - time_start.second)
-        time_left = len(chunks) - (i+1) * (datetime.now().second - time_start.second)
-        pr_bar = round((i+1) * 100 / len(chunks) / 10)
-        print(f"[{'#' * pr_bar * 2}{' ' * (10 - pr_bar) * 2}] {round(ch_per_s, 2)} ch/s {i+1}/{len(chunks)} ch. time left {round(time_left / 60, 2)} m.", end='\r')
-    # for i, product_url in enumerate(products_url[100:500]):
-    #     print(f'Распарсил {i}/500')
-    #     product = await anion_parser.get_product(product_url)
-    #     anion_table.write_new_row(product)
-
-    anion_table.close()
+        anion_table.close()
 
 
 if __name__ == '__main__':
