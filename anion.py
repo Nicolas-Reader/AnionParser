@@ -6,11 +6,17 @@ from httpx import AsyncClient, Timeout, ReadTimeout
 
 from bs4 import BeautifulSoup
 
+from fake_headers import Headers
+from fake_useragent import UserAgent
+
 from anion_excel import AnionTable
 from models import Product
 
 
 lock = asyncio.Lock()
+
+with open('proxies.txt') as proxies_file:
+    PROXIES = proxies_file.read().split('\n')
 
 
 def chunked(lst, size):
@@ -19,18 +25,20 @@ def chunked(lst, size):
 
 class AnionParser:
     def __init__(self):
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',}
-
         self.__base_url = 'https://www.anion.ru/'
         timeout = Timeout(10.0, connect=5.0)
 
-        self.__client = AsyncClient(headers=headers, timeout=timeout)
+        # self.__client = AsyncClient(headers=headers, timeout=timeout)
 
+    @staticmethod
+    def gen_headers():
+        return Headers().generate() | {'User-agent': UserAgent().random}
 
     async def get_all_categories_url(self):
-        resp = await self.__client.get(self.__base_url)
+        async with AsyncClient(headers=self.gen_headers()) as client:
+            resp = await client.get(self.__base_url)
 
-        soup = BeautifulSoup(resp.content, 'html.parser')
+            soup = BeautifulSoup(resp.content, 'html.parser')
 
         categories_url = []
 
@@ -46,11 +54,12 @@ class AnionParser:
 
 
     async def get_category_product_urls(self, category_url):
-        resp = await self.__client.get(self.__base_url + category_url,
-                                       params={
-                                           'limit': 1,
-                                       })
-        soup = BeautifulSoup(resp.content, 'html.parser')
+        async with AsyncClient(headers=self.gen_headers()) as client:
+            resp = await client.get(self.__base_url + category_url,
+                                           params={
+                                               'limit': 1,
+                                           })
+            soup = BeautifulSoup(resp.content, 'html.parser')
 
         products_count = int(
             soup\
@@ -63,15 +72,16 @@ class AnionParser:
         # print(f'Общее количество эл-ов: {products_count}\nКоличество страниц в группе: ', ceil(products_count / 100))
         for page_num in range(page_count):
             page_param = {'page': page_num + 1} if page_num + 1 > 1 else {}
-            try:
-                resp = await self.__client.get(self.__base_url + category_url,
-                                               params={
-                                                   'limit': 100,
-                                                   **page_param
-                                               })
-            except ReadTimeout:
-                print(f'[E] Превышено время ожидания при парсинге страницы {page_num}')
-                continue
+            async with AsyncClient(headers=self.gen_headers()) as client:
+                try:
+                    resp = await client.get(self.__base_url + category_url,
+                                                   params={
+                                                       'limit': 100,
+                                                       **page_param
+                                                   })
+                except ReadTimeout:
+                    print(f'[E] Превышено время ожидания при парсинге страницы {page_num}')
+                    continue
 
             soup = BeautifulSoup(resp.content, 'html.parser')
 
@@ -90,13 +100,13 @@ class AnionParser:
 
 
 
-    async def get_product(self, product_url):
-        try:
-            resp = await self.__client.get(self.__base_url + product_url)
-        except ReadTimeout:
-            print(f'[E] Долго читает страницу {self.__base_url + product_url}')
-            return
-
+    async def get_product(self, product_url, proxy):
+        async with AsyncClient(headers=self.gen_headers(), proxy=proxy, http2=False) as client:
+            try:
+                resp = await client.get(self.__base_url + product_url)
+            except ReadTimeout:
+                print(f'[E] Ошибка(ReadTimeout) при чтении страницы {self.__base_url + product_url}')
+                return
 
         soup = BeautifulSoup(resp.content, 'html.parser')
 
@@ -179,7 +189,7 @@ class AnionParser:
                     continue
 
                 desc.append(desc_item.text)
-                param_name, param_value = desc_item.get_text(strip=True).split(' - ')
+                param_name, param_value = desc_item.get_text(strip=True).split(' - ', 1)
                 if param_name in desc_alias:
                     desc_params[desc_alias[param_name]] = param_value
 
@@ -214,12 +224,12 @@ class AnionParser:
         )
 
 
-    def __del__(self):
-        del self.__client
-
-
-async def get_and_write(aparser, atable, pr_url):
-    pr = await aparser.get_product(pr_url)
+async def get_and_write(aparser, atable, pr_url, proxy):
+    try:
+        pr = await aparser.get_product(pr_url, proxy)
+    except Exception as e:
+        print(f"[E] Ошибка({e}) при прасинге товара {pr_url}")
+        pr = 0
     async with lock:
         if pr:
             atable.write_new_row(pr)
@@ -229,21 +239,27 @@ async def main():
     anion_parser = AnionParser()
     categories_urls = await anion_parser.get_all_categories_url()
 
-    for category_url in categories_urls:
+    CHUNK_SIZE = 5
+
+    for category_url in categories_urls[2:5]:
         products_url = await anion_parser.get_category_product_urls(category_url)
 
-        anion_table = AnionTable(f"book_{category_url.split('/')[-1]}")
+        anion_table = AnionTable(f"book_{category_url.split('/')[-1]}.xlsx")
         print('[D] Парсинг товаров начался')
-        chunks = chunked(products_url, 2)
+        chunks = chunked(products_url, CHUNK_SIZE)
         for i, chunk_products in enumerate(chunks):
             time_start = datetime.now()
-            tasks = [get_and_write(anion_parser, anion_table, pr_url) for pr_url in chunk_products]
+            tasks = [get_and_write(anion_parser, anion_table, pr_url, proxy) for pr_url, proxy in zip(chunk_products, PROXIES)]
             await asyncio.gather(*tasks)
 
-            ch_per_s = 2 / (datetime.now().second - time_start.second)
-            time_left = len(chunks) - (i+1) * (datetime.now().second - time_start.second)
-            pr_bar = round((i+1) * 100 / len(chunks) / 10)
-            print(f"[{'#' * pr_bar * 2}{' ' * (10 - pr_bar) * 2}] {round(ch_per_s, 2)} ch/s {i+1}/{len(chunks)} ch. time left {round(time_left / 60, 2)} m.", end='\r')
+            elapsed = (datetime.now() - time_start).total_seconds()
+            ch_per_s = 1 / elapsed
+            remaining = len(chunks) - (i + 1)
+            time_left = remaining / ch_per_s
+
+            pr_bar = round((i+1) * 20 / len(chunks))
+
+            print(f"[{'#' * pr_bar}{' ' * (10 - pr_bar)}] {ch_per_s:.2f} ch/s {i+1}/{len(chunks)} ch. time left {time_left / 60:.2f} m", end='\r')
         print()
 
         anion_table.close()
