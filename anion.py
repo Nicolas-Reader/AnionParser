@@ -39,7 +39,7 @@ class AnionParser:
     async def get_all_categories_url(self):
         limits = Limits(max_connections=100, max_keepalive_connections=20)
         timeout = Timeout(30.0, connect=10.0)
-        async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout) as client:
+        async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout, proxy=PROXIES[0]) as client:
             resp = await client.get(self.__base_url)
 
             soup = BeautifulSoup(resp.content, 'html.parser')
@@ -60,7 +60,7 @@ class AnionParser:
     async def get_category_product_urls(self, category_url):
         limits = Limits(max_connections=100, max_keepalive_connections=20)
         timeout = Timeout(30.0, connect=10.0)
-        async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout) as client:
+        async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout, proxy=PROXIES[0]) as client:
             resp = await client.get(self.__base_url + category_url,
                                            params={
                                                'limit': 1,
@@ -78,7 +78,7 @@ class AnionParser:
         # print(f'Общее количество эл-ов: {products_count}\nКоличество страниц в группе: ', ceil(products_count / 100))
         for page_num in range(page_count):
             page_param = {'page': page_num + 1} if page_num + 1 > 1 else {}
-            async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout) as client:
+            async with AsyncClient(headers=self.gen_headers(), limits=limits, timeout=timeout, proxy=PROXIES[0]) as client:
                 try:
                     resp = await client.get(self.__base_url + category_url,
                                                    params={
